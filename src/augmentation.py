@@ -37,7 +37,7 @@ def apply_d4_symmetry(board, policy, sym_idx):
         # Rotate axes (0, 1)
         y = np.rot90(y, k=rot_k, axes=(0, 1))
 
-    return x, y
+    return x.copy(), y.copy()
 
 def apply_player_swap(board, value_target):
     """
