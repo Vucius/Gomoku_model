@@ -113,6 +113,7 @@ pyvenv.cfg
 
 # Project specific caches and checkpoint outputs
 psq_cache_*.pkl
-checkpoints/
+checkpoints/*
+!checkpoints/best_model.pt
 dataset/gomocup2017/
 dataset/gomoku_dataset_split/

@@ -113,3 +113,86 @@ def soften_visit_counts(
 
     softened = np.power(counts, 1.0 / temperature, dtype=np.float32)
     return normalize_policy(softened, legal_mask)
+
+
+def top_k_policy(
+    policy: ArrayLike,
+    legal_mask: ArrayLike | None = None,
+    *,
+    k: int,
+    floor_probability: float = 0.0,
+) -> FloatArray:
+    """Keep the strongest k legal moves and renormalize the policy plane.
+
+    A tiny floor can be assigned to non-top-k legal moves to avoid a completely
+    collapsed target while still concentrating supervision on the teacher/search
+    candidates.
+    """
+
+    if k <= 0:
+        raise ValueError("k must be positive")
+    if floor_probability < 0:
+        raise ValueError("floor_probability must be non-negative")
+
+    values = normalize_policy(policy, legal_mask)
+    if legal_mask is None:
+        mask = np.ones_like(values, dtype=bool)
+    else:
+        mask = _as_legal_mask(legal_mask)
+        if mask.shape != values.shape:
+            raise ValueError("legal_mask shape must match policy shape")
+
+    legal_indices = np.flatnonzero(mask.reshape(-1))
+    if legal_indices.size <= k:
+        return values
+
+    flat = values.reshape(-1)
+    ranked_legal = legal_indices[np.argsort(flat[legal_indices])[::-1]]
+    keep = ranked_legal[:k]
+
+    pruned = np.zeros_like(flat, dtype=np.float32)
+    if floor_probability > 0:
+        legal_floor = np.setdiff1d(legal_indices, keep, assume_unique=False)
+        pruned[legal_floor] = floor_probability
+    pruned[keep] = flat[keep]
+
+    return normalize_policy(pruned.reshape(values.shape), mask)
+
+
+def mix_policy_targets(
+    primary_policy: ArrayLike,
+    secondary_policy: ArrayLike,
+    *,
+    secondary_weight: float,
+    legal_mask: ArrayLike | None = None,
+) -> FloatArray:
+    """Blend two policy targets and normalize over legal moves."""
+
+    if not 0.0 <= secondary_weight <= 1.0:
+        raise ValueError("secondary_weight must be in [0, 1]")
+
+    primary = normalize_policy(primary_policy, legal_mask)
+    secondary = normalize_policy(secondary_policy, legal_mask)
+    mixed = (1.0 - secondary_weight) * primary + secondary_weight * secondary
+    return normalize_policy(mixed, legal_mask)
+
+
+def mix_value_targets(
+    primary_value: ArrayLike,
+    secondary_value: ArrayLike,
+    *,
+    secondary_weight: float,
+) -> FloatArray:
+    """Blend scalar or vector value targets with a teacher/search value."""
+
+    if not 0.0 <= secondary_weight <= 1.0:
+        raise ValueError("secondary_weight must be in [0, 1]")
+
+    primary = np.asarray(primary_value, dtype=np.float32)
+    secondary = np.asarray(secondary_value, dtype=np.float32)
+    if primary.shape != secondary.shape:
+        raise ValueError("primary_value and secondary_value shapes must match")
+    return ((1.0 - secondary_weight) * primary + secondary_weight * secondary).astype(
+        np.float32,
+        copy=False,
+    )

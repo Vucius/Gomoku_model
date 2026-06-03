@@ -9,37 +9,58 @@ from src.config import GomokuConfig
 from src.psq_parser import parse_psq_file, detect_threats
 from src.augmentation import apply_d4_symmetry
 
+_edge_mask_cache = {}
+def get_edge_mask(board_size=15):
+    if board_size not in _edge_mask_cache:
+        mask = np.zeros((board_size, board_size), dtype=np.int64)
+        for r in range(board_size):
+            for c in range(board_size):
+                dist = min(r, c, board_size - 1 - r, board_size - 1 - c)
+                if dist <= 2:
+                    mask[r, c] = 1
+        _edge_mask_cache[board_size] = mask
+    return _edge_mask_cache[board_size]
+
+_edge_distance_cache = {}
 def get_edge_distance_matrix(board_size=15):
     """
     Computes a board_size x board_size matrix containing normalized distance to the nearest edge.
     """
-    matrix = np.zeros((board_size, board_size), dtype=np.float32)
-    max_dist = (board_size - 1) / 2.0
-    for r in range(board_size):
-        for c in range(board_size):
-            matrix[r, c] = min(r, c, board_size - 1 - r, board_size - 1 - c) / max_dist
-    return matrix
+    if board_size not in _edge_distance_cache:
+        matrix = np.zeros((board_size, board_size), dtype=np.float32)
+        max_dist = (board_size - 1) / 2.0
+        for r in range(board_size):
+            for c in range(board_size):
+                matrix[r, c] = min(r, c, board_size - 1 - r, board_size - 1 - c) / max_dist
+        _edge_distance_cache[board_size] = matrix
+    return _edge_distance_cache[board_size]
 
+_coord_conv_cache = {}
 def get_coord_conv_matrices(board_size=15):
     """
     Computes X and Y coordinate grids normalized to [-1, 1].
     """
-    x_coords = np.linspace(-1, 1, board_size, dtype=np.float32)
-    y_coords = np.linspace(-1, 1, board_size, dtype=np.float32)
-    xx, yy = np.meshgrid(x_coords, y_coords)
-    return xx, yy
+    if board_size not in _coord_conv_cache:
+        x_coords = np.linspace(-1, 1, board_size, dtype=np.float32)
+        y_coords = np.linspace(-1, 1, board_size, dtype=np.float32)
+        xx, yy = np.meshgrid(x_coords, y_coords)
+        _coord_conv_cache[board_size] = (xx, yy)
+    return _coord_conv_cache[board_size]
 
+_center_distance_cache = {}
 def get_center_distance_matrix(board_size=15):
     """
     Computes Euclidean distance to center (board_size/2, board_size/2) normalized to [0, 1].
     """
-    center = (board_size - 1) / 2.0
-    matrix = np.zeros((board_size, board_size), dtype=np.float32)
-    max_dist = np.sqrt(2 * (center ** 2))
-    for r in range(board_size):
-        for c in range(board_size):
-            matrix[r, c] = np.sqrt((r - center)**2 + (c - center)**2) / max_dist
-    return matrix
+    if board_size not in _center_distance_cache:
+        center = (board_size - 1) / 2.0
+        matrix = np.zeros((board_size, board_size), dtype=np.float32)
+        max_dist = np.sqrt(2 * (center ** 2))
+        for r in range(board_size):
+            for c in range(board_size):
+                matrix[r, c] = np.sqrt((r - center)**2 + (c - center)**2) / max_dist
+        _center_distance_cache[board_size] = matrix
+    return _center_distance_cache[board_size]
 
 def build_features(board_state, active_player, step_count, board_size=15):
     """
@@ -188,6 +209,12 @@ class GomokuDataset(Dataset):
         winner = sample["winner"]
         step = sample["step"]
         
+        # Lazy cache the base threat grid
+        if "threat_grid" not in sample:
+            sample["threat_grid"] = np.array(detect_threats(board, player, self.board_size), dtype=np.int64)
+        
+        threat_grid = sample["threat_grid"]
+
         # Create policy target (distribution map)
         policy_target = np.zeros((self.board_size, self.board_size), dtype=np.float32)
         policy_target[move[0], move[1]] = 1.0
@@ -199,6 +226,16 @@ class GomokuDataset(Dataset):
             sym_board_3d, policy_target = apply_d4_symmetry(board_3d, policy_target, sym_idx)
             board = sym_board_3d[0]
             
+            # Apply D4 symmetry to threat_grid
+            rot_k = sym_idx % 4
+            flip_h = sym_idx // 4
+            threat_grid_sym = threat_grid.copy()
+            if flip_h:
+                threat_grid_sym = np.flip(threat_grid_sym, axis=1)
+            if rot_k > 0:
+                threat_grid_sym = np.rot90(threat_grid_sym, k=rot_k, axes=(0, 1))
+            threat_grid = threat_grid_sym
+            
         # Build features
         features = build_features(board, player, step, self.board_size)
         
@@ -208,17 +245,10 @@ class GomokuDataset(Dataset):
 
         # Generate auxiliary targets
         # 1. Threat map (detect threats for current player on board before making the move)
-        threat_grid = detect_threats(board, player, self.board_size)
         threat_target = np.array(threat_grid, dtype=np.int64)
 
-        # 2. Edge Threat: Threat map masked to borders (distance <= 2 to edge)
-        edge_threat_target = threat_target.copy()
-        edge_distance = np.zeros((self.board_size, self.board_size), dtype=np.int64)
-        for r in range(self.board_size):
-            for c in range(self.board_size):
-                dist = min(r, c, self.board_size - 1 - r, self.board_size - 1 - c)
-                if dist > 2:
-                    edge_threat_target[r, c] = 0
+        # 2. Edge Threat: Threat map masked to borders (distance <= 2 to edge) and binarized
+        edge_threat_target = (threat_target * get_edge_mask(self.board_size) > 0).astype(np.float32)
 
         # 3. Distance-to-Win Target (Proxy estimation: number of remaining moves in game / max possible moves)
         # If no win occurred, target is 1.0 (far)
@@ -232,15 +262,15 @@ class GomokuDataset(Dataset):
         # 4. Legal moves mask (empty intersections)
         legal_move_target = (board == 0).astype(np.float32)
 
-        # Convert to Tensors
+        # Convert to Tensors (zero-copy using torch.from_numpy)
         return {
-            "features": torch.tensor(features, dtype=torch.float32),
-            "policy": torch.tensor(policy_target, dtype=torch.float32),
-            "value": torch.tensor(value_target, dtype=torch.float32),
-            "threat_target": torch.tensor(threat_target, dtype=torch.long),
-            "edge_threat_target": torch.tensor(edge_threat_target, dtype=torch.float32).unsqueeze(0),
-            "dtw_target": torch.tensor(dtw_target, dtype=torch.float32),
-            "legal_move_target": torch.tensor(legal_move_target, dtype=torch.float32).unsqueeze(0)
+            "features": torch.from_numpy(features),
+            "policy": torch.from_numpy(policy_target),
+            "value": torch.from_numpy(value_target),
+            "threat_target": torch.from_numpy(np.ascontiguousarray(threat_target)),
+            "edge_threat_target": torch.from_numpy(edge_threat_target).unsqueeze(0),
+            "dtw_target": torch.from_numpy(dtw_target),
+            "legal_move_target": torch.from_numpy(legal_move_target).unsqueeze(0)
         }
 
 class TacticalEdgeBatchSampler(BatchSampler):

@@ -37,7 +37,11 @@ class GomokuTrainer:
 
         # Dynamic training hyperparameters
         self.temperature = config.TEMPERATURE
-        self.teacher_alpha = config.TEACHER_POLICY_WEIGHT
+        self.teacher_policy_weight = config.TEACHER_POLICY_WEIGHT
+        self.teacher_value_weight = config.TEACHER_VALUE_WEIGHT
+        self.policy_top_k = config.POLICY_TOP_K
+        self.policy_top_k_floor = config.POLICY_TOP_K_FLOOR
+        self.enable_top_k_policy = config.ENABLE_TOP_K_POLICY
 
     def train_epoch(self, epoch):
         self.model.train()
@@ -51,53 +55,57 @@ class GomokuTrainer:
         correct_moves = 0
         total_samples = 0
 
+        device_type = "xpu" if "xpu" in str(self.device) else ("cuda" if "cuda" in str(self.device) else "cpu")
         loop = tqdm(self.train_loader, desc=f"Epoch {epoch}/{self.config.NUM_EPOCHS} [Train]")
         for batch in loop:
             # Move data to device
-            features = batch["features"].to(self.device)
-            target_policy = batch["policy"].to(self.device)
-            target_value = batch["value"].to(self.device)
-            threat_target = batch["threat_target"].to(self.device)
-            edge_threat_target = batch["edge_threat_target"].to(self.device)
-            dtw_target = batch["dtw_target"].to(self.device)
-            legal_move_target = batch["legal_move_target"].to(self.device)
-
-            # Knowledge Distillation (Stage 3)
-            # If teacher model is available, mix standard targets with teacher predictions
-            if self.teacher_model is not None:
-                with torch.no_grad():
-                    teacher_outputs = self.teacher_model(features)
-                    teacher_policy_soft = torch.softmax(teacher_outputs["policy_logits"], dim=-1)
-                    teacher_value_soft = teacher_outputs["value"]
-                
-                # Reshape soft policy to match targets
-                target_policy_flat = target_policy.view(target_policy.size(0), -1)
-                mixed_policy = (1.0 - self.teacher_alpha) * target_policy_flat + self.teacher_alpha * teacher_policy_soft
-                target_policy = mixed_policy.view_as(target_policy)
-
-                mixed_value = (1.0 - self.teacher_alpha) * target_value + self.teacher_alpha * teacher_value_soft
-                target_value = mixed_value
-
-            targets = {
-                "policy": target_policy,
-                "value": target_value,
-                "threat_target": threat_target,
-                "edge_threat_target": edge_threat_target,
-                "dtw_target": dtw_target,
-                "legal_move_target": legal_move_target
-            }
+            features = batch["features"].to(self.device, non_blocking=True)
+            target_policy = batch["policy"].to(self.device, non_blocking=True)
+            target_value = batch["value"].to(self.device, non_blocking=True)
+            threat_target = batch["threat_target"].to(self.device, non_blocking=True)
+            edge_threat_target = batch["edge_threat_target"].to(self.device, non_blocking=True)
+            dtw_target = batch["dtw_target"].to(self.device, non_blocking=True)
+            legal_move_target = batch["legal_move_target"].to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad()
-            
-            # Forward pass
-            outputs = self.model(features)
-            
-            # Apply Temperature scaling to policy logits to control policy smoothing
-            if self.temperature != 1.0:
-                outputs["policy_logits"] = outputs["policy_logits"] / self.temperature
 
-            loss_dict = self.criterion(outputs, targets)
-            loss = loss_dict["loss"]
+            with torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16):
+                # Knowledge Distillation (Stage 3)
+                # If teacher model is available, mix standard targets with teacher predictions
+                if self.teacher_model is not None:
+                    with torch.no_grad():
+                        teacher_outputs = self.teacher_model(features)
+                        teacher_policy_soft = torch.softmax(teacher_outputs["policy_logits"], dim=-1)
+                        teacher_value_soft = teacher_outputs["value"]
+                    
+                    # Reshape soft policy to match targets
+                    target_policy_flat = target_policy.view(target_policy.size(0), -1)
+                    mixed_policy = (1.0 - self.teacher_policy_weight) * target_policy_flat + self.teacher_policy_weight * teacher_policy_soft
+                    target_policy = mixed_policy.view_as(target_policy)
+
+                    mixed_value = (1.0 - self.teacher_value_weight) * target_value + self.teacher_value_weight * teacher_value_soft
+                    target_value = mixed_value
+
+                target_policy = self.shape_policy_target(target_policy, legal_move_target)
+
+                targets = {
+                    "policy": target_policy,
+                    "value": target_value,
+                    "threat_target": threat_target,
+                    "edge_threat_target": edge_threat_target,
+                    "dtw_target": dtw_target,
+                    "legal_move_target": legal_move_target
+                }
+            
+                # Forward pass
+                outputs = self.model(features)
+                
+                # Apply Temperature scaling to policy logits to control policy smoothing
+                if self.temperature != 1.0:
+                    outputs["policy_logits"] = outputs["policy_logits"] / self.temperature
+
+                loss_dict = self.criterion(outputs, targets)
+                loss = loss_dict["loss"]
 
             loss.backward()
             self.optimizer.step()
@@ -143,15 +151,17 @@ class GomokuTrainer:
         correct_moves = 0
         total_samples = 0
 
+        device_type = "xpu" if "xpu" in str(self.device) else ("cuda" if "cuda" in str(self.device) else "cpu")
         with torch.no_grad():
             for batch in self.val_loader:
-                features = batch["features"].to(self.device)
-                target_policy = batch["policy"].to(self.device)
-                target_value = batch["value"].to(self.device)
-                threat_target = batch["threat_target"].to(self.device)
-                edge_threat_target = batch["edge_threat_target"].to(self.device)
-                dtw_target = batch["dtw_target"].to(self.device)
-                legal_move_target = batch["legal_move_target"].to(self.device)
+                features = batch["features"].to(self.device, non_blocking=True)
+                target_policy = batch["policy"].to(self.device, non_blocking=True)
+                target_value = batch["value"].to(self.device, non_blocking=True)
+                threat_target = batch["threat_target"].to(self.device, non_blocking=True)
+                edge_threat_target = batch["edge_threat_target"].to(self.device, non_blocking=True)
+                dtw_target = batch["dtw_target"].to(self.device, non_blocking=True)
+                legal_move_target = batch["legal_move_target"].to(self.device, non_blocking=True)
+                target_policy = self.shape_policy_target(target_policy, legal_move_target)
 
                 targets = {
                     "policy": target_policy,
@@ -162,8 +172,12 @@ class GomokuTrainer:
                     "legal_move_target": legal_move_target
                 }
 
-                outputs = self.model(features)
-                loss_dict = self.criterion(outputs, targets)
+                with torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    outputs = self.model(features)
+                    # Apply Temperature scaling to policy logits to control policy smoothing
+                    if self.temperature != 1.0:
+                        outputs["policy_logits"] = outputs["policy_logits"] / self.temperature
+                    loss_dict = self.criterion(outputs, targets)
                 
                 batch_size = features.size(0)
                 val_loss += loss_dict["loss"].item() * batch_size
@@ -220,3 +234,37 @@ class GomokuTrainer:
             self.temperature = 0.5
         
         print(f"Softmax Temperature updated to {self.temperature}")
+
+    def shape_policy_target(self, target_policy, legal_move_target):
+        if not self.enable_top_k_policy:
+            return target_policy
+
+        batch_size = target_policy.size(0)
+        flat_policy = target_policy.view(batch_size, -1)
+        flat_legal = legal_move_target.view(batch_size, -1).bool()
+        if self.policy_top_k <= 0 or self.policy_top_k >= flat_policy.size(1):
+            return self.normalize_policy_target(flat_policy, flat_legal).view_as(target_policy)
+
+        masked_policy = flat_policy.masked_fill(~flat_legal, 0.0)
+        normalized = self.normalize_policy_target(masked_policy, flat_legal)
+        legal_counts = flat_legal.sum(dim=1)
+        top_k = min(self.policy_top_k, int(legal_counts.max().item()))
+        if top_k <= 0:
+            return normalized.view_as(target_policy)
+
+        top_values, top_indices = torch.topk(normalized, k=top_k, dim=1)
+        shaped = torch.zeros_like(normalized)
+        shaped.scatter_(1, top_indices, top_values)
+
+        if self.policy_top_k_floor > 0:
+            floor_mask = flat_legal & (shaped <= 0)
+            shaped = shaped + floor_mask.to(shaped.dtype) * self.policy_top_k_floor
+
+        return self.normalize_policy_target(shaped, flat_legal).view_as(target_policy)
+
+    @staticmethod
+    def normalize_policy_target(flat_policy, flat_legal):
+        masked = flat_policy.masked_fill(~flat_legal, 0.0)
+        total = masked.sum(dim=1, keepdim=True)
+        uniform = flat_legal.to(masked.dtype) / flat_legal.sum(dim=1, keepdim=True).clamp(min=1)
+        return torch.where(total > 0, masked / total.clamp(min=1e-8), uniform)

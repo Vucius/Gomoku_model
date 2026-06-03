@@ -8,8 +8,9 @@
 - 2026-06-02：已落地阶段三 3.1/3.2 的 policy label smoothing 与 visit-count temperature 软化工具，新增 `gomoku_model/targets.py`，支持 one-hot 标签、合法点均匀分布、合法点 mask 归一化、平滑标签和访问次数软化。
 - 2026-06-02：已新增 `tests/test_features.py`、`tests/test_sampling.py` 和 `tests/test_targets.py`，覆盖特征编码、真实棋盘视角、边缘分桶、均衡采样、full-board 数据集 batch 编码和 policy target 变换。
 - 2026-06-02：已新增 `.github/workflows/ci.yml`，在 GitHub Actions 中安装 numpy 并运行 `python -m unittest discover -s tests`；已新增 `.gitignore`，避免 `.venv` 与 Python 缓存进入版本控制。
+- 2026-06-03：已落地阶段三 3.3/3.4/3.5 的训练标签控制：`gomoku_model/targets.py` 新增 top-k policy distillation、policy target 混合和 value target 混合工具；`src/trainer.py` 在训练/验证 loss 前执行 torch 版 top-k policy shaping，并将 teacher policy/value 权重拆分；`src/loss.py` 的 entropy 正则改为只在合法落子集合上计算；`train.py` 新增 `--policy_top_k`、`--disable_top_k_policy`、`--teacher_policy_weight`、`--teacher_value_weight`、`--label_smoothing` 和 `--entropy_alpha`。
 
-下一步优先推进：阶段三 3.3 的 top-k policy distillation，或先搭建最小训练脚本，把当前 `features/sampling/targets` 串成可复现实验流水线。
+下一步优先推进：把 `gomoku_model/features/sampling/targets` 与当前 `src/dataset.py` / `src/trainer.py` 做进一步去重整合，或推进阶段四的 model pool / 历史 checkpoint 对弈池。
 
 > 基于 tmp_D1.md 与 tmp_D2.md 的分析，结合 Rapfi/MixNet 论文思路整理。
 
@@ -170,6 +171,8 @@ ownership_head      ：预测区域影响力（可选）
 
 保留 top-k 候选点（k = 8 / 16 / 32），对 top-k 内重新归一化，其余点给极小概率。
 
+**当前落地状态**：`gomoku_model.targets.top_k_policy()` 提供 numpy 工具；训练时 `GomokuTrainer.shape_policy_target()` 会对原始/teacher 混合后的 policy target 执行 top-k 截断，默认 `k=16`，非 top-k 合法点保留 `1e-6` floor 后重新归一化。
+
 ### 3.4 策略熵正则化
 
 在 policy 损失函数中加入熵惩罚项：
@@ -179,6 +182,8 @@ L_p_total = L_p_cross_entropy - α × Σ π̂(m) × log π̂(m)
 ```
 
 惩罚"过于绝对"的单点输出，迫使训练时维持一定的分布宽度。
+
+**当前落地状态**：`src/loss.py` 已实现合法落子集合内的 policy entropy regularization，避免鼓励非法/已占点概率。
 
 ### 3.5 混合标签策略（核心）
 
@@ -200,6 +205,8 @@ policy target = 0.5 × Gumbel MCTS policy
              + 0.3 × AlphaBeta best-line policy
              + 0.2 × teacher policy
 ```
+
+**当前落地状态**：训练器已将 teacher policy 与 teacher value 权重拆分为 `TEACHER_POLICY_WEIGHT` / `TEACHER_VALUE_WEIGHT`，CLI 可分别覆盖；`gomoku_model.targets.mix_policy_targets()` 和 `mix_value_targets()` 可用于后续搜索器/教师标签离线生成。
 
 ---
 

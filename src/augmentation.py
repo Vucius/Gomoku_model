@@ -19,7 +19,7 @@ def apply_d4_symmetry(board, policy, sym_idx):
     flip_h = sym_idx // 4
 
     # Apply to board: channels are preserved, transform H and W
-    x = board.copy()
+    x = board
     if flip_h:
         # Flip along horizontal axis (left-right flip, which flips the column index)
         # For a 3D array (C, H, W), flipping columns is axis 2
@@ -29,7 +29,7 @@ def apply_d4_symmetry(board, policy, sym_idx):
         x = np.rot90(x, k=rot_k, axes=(1, 2))
 
     # Apply to policy (H, W)
-    y = policy.copy()
+    y = policy
     if flip_h:
         # Flip columns (axis 1)
         y = np.flip(y, axis=1)
@@ -37,7 +37,7 @@ def apply_d4_symmetry(board, policy, sym_idx):
         # Rotate axes (0, 1)
         y = np.rot90(y, k=rot_k, axes=(0, 1))
 
-    return x.copy(), y.copy()
+    return np.ascontiguousarray(x), np.ascontiguousarray(y)
 
 def apply_player_swap(board, value_target):
     """

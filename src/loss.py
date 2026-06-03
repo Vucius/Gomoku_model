@@ -35,11 +35,11 @@ class GomokuMultiTaskLoss(nn.Module):
         """
         # --- 1. Policy Loss with Label Smoothing & Entropy Regularization ---
         policy_logits = model_outputs["policy_logits"]
-        policy_probs = F.softmax(policy_logits, dim=-1)
         log_policy_probs = F.log_softmax(policy_logits, dim=-1)
         
         target_policy = targets["policy"].view(targets["policy"].size(0), -1)
         legal_mask = targets["legal_move_target"].view(targets["legal_move_target"].size(0), -1)
+        legal_mask_bool = legal_mask.bool()
         
         # Policy Label Smoothing
         # Smoothes one-hot targets across all legal moves to prevent extreme policy predictions
@@ -50,9 +50,12 @@ class GomokuMultiTaskLoss(nn.Module):
         # Cross Entropy Loss
         policy_loss = -torch.mean(torch.sum(smoothed_target * log_policy_probs, dim=1))
         
-        # Policy Entropy Regularization
-        # Prevents policy distribution from collapsing into single one-hot predictions
-        entropy = -torch.sum(policy_probs * log_policy_probs, dim=1)
+        # Policy Entropy Regularization over legal moves only.
+        # This prevents target collapse without rewarding probability mass on occupied points.
+        legal_logits = policy_logits.masked_fill(~legal_mask_bool, torch.finfo(policy_logits.dtype).min)
+        legal_probs = F.softmax(legal_logits, dim=-1)
+        legal_log_probs = F.log_softmax(legal_logits, dim=-1)
+        entropy = -torch.sum(legal_probs * legal_log_probs.masked_fill(~legal_mask_bool, 0.0), dim=1)
         entropy_loss = -torch.mean(entropy)  # Negative entropy to maximize it
         
         total_policy_loss = policy_loss + self.alpha * entropy_loss

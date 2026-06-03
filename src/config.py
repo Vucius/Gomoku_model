@@ -30,9 +30,12 @@ class GomokuConfig:
     POLICY_ENTROPY_ALPHA = 0.01  # Policy entropy regularization weight
     LABEL_SMOOTHING_EPS = 0.05  # Policy label smoothing epsilon (Stage 3)
     TEMPERATURE = 1.0  # Softmax temperature (Stage 3)
+    ENABLE_TOP_K_POLICY = True
+    POLICY_TOP_K = 16
+    POLICY_TOP_K_FLOOR = 1e-6
 
     # --- Training Hyperparameters ---
-    BATCH_SIZE = 256
+    BATCH_SIZE = 128
     NUM_EPOCHS = 50
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 1e-4

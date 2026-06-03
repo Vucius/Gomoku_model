@@ -21,9 +21,12 @@ from .sampling import (
 from .targets import (
     label_smooth_policy,
     legal_uniform_policy,
+    mix_policy_targets,
+    mix_value_targets,
     normalize_policy,
     policy_from_move,
     soften_visit_counts,
+    top_k_policy,
 )
 
 __all__ = [
@@ -41,9 +44,12 @@ __all__ = [
     "label_smooth_policy",
     "legal_moves_plane",
     "legal_uniform_policy",
+    "mix_policy_targets",
+    "mix_value_targets",
     "normalize_policy",
     "phase_plane",
     "policy_from_move",
     "sample_balanced_indices",
     "soften_visit_counts",
+    "top_k_policy",
 ]
