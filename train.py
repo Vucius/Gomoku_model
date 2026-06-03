@@ -24,6 +24,9 @@ def main():
     parser.add_argument("--no_npy", action="store_true", help="Disable loading .npy dataset")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
+    parser.add_argument("--checkpoint_prefix", type=str, default="model", help="Prefix for checkpoint filenames")
+    parser.add_argument("--res_blocks", type=int, default=None, help="Override number of residual blocks")
+    parser.add_argument("--hidden_channels", type=int, default=None, help="Override number of hidden channels")
     args = parser.parse_args()
 
     # 1. Initialize configuration
@@ -48,6 +51,10 @@ def main():
         config.LABEL_SMOOTHING_EPS = args.label_smoothing
     if args.entropy_alpha is not None:
         config.POLICY_ENTROPY_ALPHA = args.entropy_alpha
+    if args.res_blocks is not None:
+        config.NUM_RES_BLOCKS = args.res_blocks
+    if args.hidden_channels is not None:
+        config.HIDDEN_CHANNELS = args.hidden_channels
 
     if not 0.0 <= config.TEACHER_POLICY_WEIGHT <= 1.0:
         raise ValueError("--teacher_policy_weight must be in [0, 1]")
@@ -74,6 +81,9 @@ def main():
     print(f"Epochs              : {config.NUM_EPOCHS}")
     print(f"Batch Size          : {config.BATCH_SIZE}")
     print(f"Learning Rate       : {config.LEARNING_RATE}")
+    print(f"Res Blocks          : {config.NUM_RES_BLOCKS}")
+    print(f"Hidden Channels     : {config.HIDDEN_CHANNELS}")
+    print(f"Checkpoint Prefix   : {args.checkpoint_prefix}")
     print(f"Policy Top-k        : {config.POLICY_TOP_K if config.ENABLE_TOP_K_POLICY else 'disabled'}")
     print(f"Label Smoothing     : {config.LABEL_SMOOTHING_EPS}")
     print(f"Entropy Alpha       : {config.POLICY_ENTROPY_ALPHA}")
@@ -152,7 +162,8 @@ def main():
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        teacher_model=teacher_model
+        teacher_model=teacher_model,
+        checkpoint_prefix=args.checkpoint_prefix
     )
 
     # 6. Training Loop

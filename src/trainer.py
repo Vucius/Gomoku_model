@@ -11,7 +11,7 @@ class GomokuTrainer:
     Manager for training and evaluating GomokuNet.
     Includes support for knowledge distillation, temperature scaling, and checkpointing.
     """
-    def __init__(self, config, model, train_loader, val_loader, teacher_model=None):
+    def __init__(self, config, model, train_loader, val_loader, teacher_model=None, checkpoint_prefix="model"):
         self.config = config
         if config.DEVICE == "cuda" and torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -23,6 +23,7 @@ class GomokuTrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.teacher_model = teacher_model.to(self.device) if teacher_model is not None else None
+        self.checkpoint_prefix = checkpoint_prefix
 
         self.optimizer = optim.AdamW(
             self.model.parameters(),
@@ -210,15 +211,33 @@ class GomokuTrainer:
             "config": self.config
         }
         
+        # Determine filenames based on prefix
+        if self.checkpoint_prefix == "base_model":
+            latest_filename = "latest_base_model.pt"
+            best_filename = "base_model.pt"
+        elif self.checkpoint_prefix == "teacher_model":
+            latest_filename = "latest_teacher_model.pt"
+            best_filename = "teacher_model.pt"
+        else:
+            latest_filename = f"latest_{self.checkpoint_prefix}.pt"
+            best_filename = f"best_{self.checkpoint_prefix}.pt"
+
         # Save latest
-        latest_path = os.path.join(self.config.CHECKPOINT_DIR, "latest_model.pt")
+        latest_path = os.path.join(self.config.CHECKPOINT_DIR, latest_filename)
         torch.save(checkpoint, latest_path)
         
         # Save best
         if is_best:
-            best_path = os.path.join(self.config.CHECKPOINT_DIR, "best_model.pt")
+            best_path = os.path.join(self.config.CHECKPOINT_DIR, best_filename)
             torch.save(checkpoint, best_path)
             print(f"Saved new best model checkpoint to {best_path}")
+            
+        # Automatic backup every 4 epochs (Interruption protection)
+        if epoch % 4 == 0:
+            backup_filename = f"{self.checkpoint_prefix}_epoch_{epoch}.pt"
+            backup_path = os.path.join(self.config.CHECKPOINT_DIR, backup_filename)
+            torch.save(checkpoint, backup_path)
+            print(f"Saved periodic backup checkpoint to {backup_path}")
 
     def update_temperature(self, epoch):
         """

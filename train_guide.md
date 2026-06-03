@@ -71,46 +71,53 @@ pip install -r requirements.txt
 
 ### 步骤 B：运行训练命令
 
-#### 方案 1：标准多任务学习训练（推荐首次运行，从零训练完整模型）
-直接运行默认配置（自动应用所有性能加速和边界增强技术），从零开始训练网络。
+#### 方案 1：标准基础模型训练（从零训练基础版模型）
+使用独立的 `train_base.py` 脚本，从零开始训练一个标准大小的神经网络，模型权重将输出为 `base_model` 相关的名称。
 ```bash
-python train.py --epochs 50 --batch_size 128
+python train_base.py --epochs 50 --batch_size 128
 ```
+* **输出文件**：
+  * **[base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/base_model.pt)**：验证集损失最低的最佳模型。
+  * **[latest_base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_base_model.pt)**：最新 Epoch 的训练状态。
 
-#### 方案 2：轻量级快速训练（适用于配置测试/调试）
-进行短期的测试训练，以便快速检查输出权重和显存占用。
+#### 方案 2：教师模型训练（训练更大网络规模的强模型）
+使用独立的 `train_teacher.py` 脚本训练教师模型。您可以通过参数灵活调大网络（例如设置 20 层 ResBlock、256 特征通道），作为蒸馏源。
 ```bash
-python train.py --epochs 2 --batch_size 128
+python train_teacher.py --epochs 50 --batch_size 128 --res_blocks 20 --hidden_channels 256
 ```
+* **输出文件**：
+  * **[teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/teacher_model.pt)**：最佳教师模型。
+  * **[latest_teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_teacher_model.pt)**：最新 Epoch 的教师训练状态。
 
-#### 方案 3：开启教师蒸馏训练（知识蒸馏模式）
-如果您已经拥有一个表现较强的教师模型权重（例如 `checkpoints/best_teacher_model.pt`），希望通过大模型引导学生模型取得更好的泛化性：
-```bash
-python train.py --teacher checkpoints/best_teacher_model.pt --epochs 50 --batch_size 128
-```
+#### 方案 3：开启学生蒸馏训练（知识蒸馏模式，融合教师 soft targets）
+使用主脚本 `train.py`，载入教师模型权重（可以是 GitHub 恢复出来的 `base_teacher_model.pt` 或新训练的大教师模型 `teacher_model.pt`），以 75/25 的混合比例蒸馏训练一个学生模型。
+* **使用从 GitHub 恢复的基础教师模型 `base_teacher_model.pt` 进行蒸馏**：
+  ```bash
+  python train.py --teacher checkpoints/base_teacher_model.pt --epochs 50 --batch_size 128
+  ```
+* **使用新训练的大教师模型 `teacher_model.pt` 进行蒸馏**（若教师模型网络维度被修改，则需传入相应的结构参数以正确载入教师）：
+  ```bash
+  python train.py --teacher checkpoints/teacher_model.pt --epochs 50 --batch_size 128
+  ```
+* **自定义学生模型的输出名称**（通过 `--checkpoint_prefix` 规避覆盖）：
+  ```bash
+  python train.py --teacher checkpoints/base_teacher_model.pt --checkpoint_prefix student_model --epochs 50 --batch_size 128
+  ```
 
-如需显式调整 Rapfi 风格的 75/25 混合比例和 top-k 候选点数量：
-```bash
-python train.py --teacher checkpoints/best_teacher_model.pt --teacher_policy_weight 0.75 --teacher_value_weight 0.75 --policy_top_k 16 --epochs 50 --batch_size 128
-```
-
-若要做消融实验，可关闭 top-k 或调整合法落子 entropy 正则：
-```bash
-python train.py --disable_top_k_policy --entropy_alpha 0.0 --label_smoothing 0.05 --epochs 10 --batch_size 128
-```
-
-#### 方案 4：分段/断点续训（增量累积训练）
-如果您觉得一次性运行 50 个 Epoch 耗时过长，可以使用 `--resume` 参数加载之前保存的检查点（`checkpoints/latest_model.pt`）。脚本将自动恢复模型权重、优化器状态和学习率曲线，从上次中断的 Epoch 处继续向后训练。
-```bash
-# 步骤 1：首次运行，设定训练目标为 5 个 Epoch
-python train.py --epochs 5 --batch_size 128
-
-# 步骤 2：继续训练，设定新目标为 10 个 Epoch，从上一次结束的最新检查点恢复
-python train.py --epochs 10 --batch_size 128 --resume checkpoints/latest_model.pt
-
-# 步骤 3：以此类推，逐步增加目标 --epochs 并指定 --resume 即可累积完成全部 50 个 Epoch 的训练。
-python train.py --epochs 50 --batch_size 128 --resume checkpoints/latest_model.pt
-```
+#### 方案 4：分段/断点续训（增量累积与防中断恢复）
+如果您觉得一次性运行过长，可以使用 `--resume` 参数恢复。注意使用对应的脚本和对应的 latest 文件：
+* **恢复基础模型训练**：
+  ```bash
+  python train_base.py --epochs 50 --batch_size 128 --resume checkpoints/latest_base_model.pt
+  ```
+* **恢复教师模型训练**：
+  ```bash
+  python train_teacher.py --epochs 50 --batch_size 128 --resume checkpoints/latest_teacher_model.pt
+  ```
+* **恢复学生蒸馏训练**：
+  ```bash
+  python train.py --epochs 50 --batch_size 128 --resume checkpoints/latest_model.pt
+  ```
 
 ---
 
@@ -121,12 +128,19 @@ python train.py --epochs 50 --batch_size 128 --resume checkpoints/latest_model.p
 - `loss`: 当前批次的多任务联合损失（Total Combined Loss）。
 - `pol_l`: 策略头交叉熵损失（Policy Cross Entropy Loss）。
 - `val_l`: 价值头均方误差损失（Value MSE Loss）。
-- `acc`: 模型的最佳落子预测准确率（以 Argmax 预测与真实落子匹配的比例计算）。
+- `acc`: 最佳落子预测准确率。
 
-### 模型保存与权重输出
-训练过程中，权重文件会自动保存在 `checkpoints/` 目录下：
-1. **[latest_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_model.pt)**：每个 Epoch 结束时保存的最新模型状态。
-2. **[best_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/best_model.pt)**：在验证集上达到最低损失（Best Validation Loss）的优秀模型权重。
+### 🛡️ 防中断自动备份机制 (Interruption Protection)
+为了防止训练意外中断导致进度丢失，所有脚本均已集成**自动备份机制**：
+* 训练过程中，**每隔 4 个 Epoch**（如第 4, 8, 12... Epoch），训练器都会自动将当前的完整状态备份保存到以下文件：
+  `checkpoints/{checkpoint_prefix}_epoch_{epoch}.pt`
+* 即使发生断电、系统崩溃或中断，您也能选择最近的 4 周期备份文件进行 `--resume` 恢复。
+
+### 模型保存与权重输出映射
+根据运行脚本的不同，权重输出映射关系如下：
+1. **基础训练 (`train_base.py`)**：保存至 [base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/base_model.pt) 和 [latest_base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_base_model.pt)。
+2. **教师训练 (`train_teacher.py`)**：保存至 [teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/teacher_model.pt) 和 [latest_teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_teacher_model.pt)。
+3. **蒸馏训练 (`train.py`)**：默认保存至 [best_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/best_model.pt) 和 [latest_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_model.pt)（可通过 `--checkpoint_prefix` 调整）。
 
 ---
 
