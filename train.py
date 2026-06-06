@@ -27,6 +27,9 @@ def main():
     parser.add_argument("--checkpoint_prefix", type=str, default="model", help="Prefix for checkpoint filenames")
     parser.add_argument("--res_blocks", type=int, default=None, help="Override number of residual blocks")
     parser.add_argument("--hidden_channels", type=int, default=None, help="Override number of hidden channels")
+    parser.add_argument("--teacher_res_blocks", type=int, default=None, help="Override teacher residual blocks count")
+    parser.add_argument("--teacher_hidden_channels", type=int, default=None, help="Override teacher hidden channels count")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of DataLoader worker processes (set to 0 to disable multiprocessing on Windows)")
     args = parser.parse_args()
 
     # 1. Initialize configuration
@@ -123,21 +126,24 @@ def main():
     # Check if GPU device (XPU or CUDA) is available for pin_memory
     gpu_available = torch.cuda.is_available() or (hasattr(torch, "xpu") and torch.xpu.is_available())
 
+    num_workers = args.num_workers
+    persistent_workers = True if num_workers > 0 else False
+
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
-        num_workers=4,  # Multiprocessing is safe here as main() is guarded
+        num_workers=num_workers,
         pin_memory=True if gpu_available else False,
-        persistent_workers=True
+        persistent_workers=persistent_workers
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True if gpu_available else False,
-        persistent_workers=True
+        persistent_workers=persistent_workers
     )
 
     # 3. Instantiate Student Model
@@ -149,8 +155,27 @@ def main():
     if args.teacher is not None:
         if os.path.exists(args.teacher):
             print(f"Loading teacher model from {args.teacher}...")
-            teacher_model = GomokuNet(config)
             checkpoint = torch.load(args.teacher, map_location="cpu", weights_only=False)
+            
+            import copy
+            teacher_config = copy.deepcopy(config)
+            if "config" in checkpoint:
+                print("Loaded teacher configuration from checkpoint metadata.")
+                loaded_conf = checkpoint["config"]
+                # Safeguard: copy parameters
+                if hasattr(loaded_conf, "NUM_RES_BLOCKS"):
+                    teacher_config.NUM_RES_BLOCKS = loaded_conf.NUM_RES_BLOCKS
+                if hasattr(loaded_conf, "HIDDEN_CHANNELS"):
+                    teacher_config.HIDDEN_CHANNELS = loaded_conf.HIDDEN_CHANNELS
+            
+            # CLI overrides for teacher
+            if args.teacher_res_blocks is not None:
+                teacher_config.NUM_RES_BLOCKS = args.teacher_res_blocks
+            if args.teacher_hidden_channels is not None:
+                teacher_config.HIDDEN_CHANNELS = args.teacher_hidden_channels
+                
+            print(f"Teacher network structure: ResBlocks={teacher_config.NUM_RES_BLOCKS}, HiddenChannels={teacher_config.HIDDEN_CHANNELS}")
+            teacher_model = GomokuNet(teacher_config)
             teacher_model.load_state_dict(checkpoint["model_state_dict"])
             print("Teacher model loaded successfully!")
         else:

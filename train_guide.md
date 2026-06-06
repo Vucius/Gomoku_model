@@ -35,10 +35,16 @@
 | `--disable_top_k_policy` | `flag` | `False` | 关闭 top-k policy target shaping，保留原始 policy target。 |
 | `--label_smoothing` | `float` | `0.05` *(见 config)* | 覆盖 policy label smoothing epsilon。 |
 | `--entropy_alpha` | `float` | `0.01` *(见 config)* | 覆盖合法落子集合内 policy entropy regularization 权重。 |
+| `--checkpoint_prefix` | `str` | `"model"` | 模型保存的前缀名。 |
+| `--res_blocks` | `int` | `12` *(见 config)* | 学生（或当前训练）网络的 ResBlock 层数。 |
+| `--hidden_channels` | `int` | `128` *(见 config)* | 学生（或当前训练）网络的特征通道数。 |
+| `--teacher_res_blocks` | `int` | `None` | 显式覆盖教师模型的 ResBlock 层数（默认从 checkpoint 中自动提取）。 |
+| `--teacher_hidden_channels` | `int` | `None` | 显式覆盖教师模型的特征通道数（默认从 checkpoint 中自动提取）。 |
 | `--no_psq` | `flag` | `False` | 若启用此 flag，则不加载 Gomocup2017 的 `.psq` 格式数据集。 |
 | `--no_npy` | `flag` | `False` | 若启用此 flag，则不加载 WinePy 的 `.npy` 格式数据集。 |
 | `--seed` | `int` | `42` | 随机种子，确保实验可复现。 |
 | `--resume` | `str` | `None` | 从已有 checkpoint 恢复模型、优化器和学习率调度器状态。 |
+| `--num_workers` | `int` | `4` | DataLoader 的工作线程数（在 Windows 上遇到 1455 错误时设为 0 可解决多进程共享内存崩溃）。 |
 
 ### 关键配置修改
 如需修改网络深度、ResBlock 数量、输入特征平面数、不同损失的权重比例等，请编辑配置文件：
@@ -72,18 +78,18 @@ pip install -r requirements.txt
 ### 步骤 B：运行训练命令
 
 #### 方案 1：标准基础模型训练（从零训练基础版模型）
-使用独立的 `train_base.py` 脚本，从零开始训练一个标准大小的神经网络，模型权重将输出为 `base_model` 相关的名称。
+使用统一的主脚本 `train.py`，指定 `--checkpoint_prefix base_model` 从零开始训练一个标准大小的神经网络。
 ```bash
-python train_base.py --epochs 50 --batch_size 128
+python train.py --checkpoint_prefix base_model --epochs 50 --batch_size 128
 ```
 * **输出文件**：
   * **[base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/base_model.pt)**：验证集损失最低的最佳模型。
   * **[latest_base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_base_model.pt)**：最新 Epoch 的训练状态。
 
 #### 方案 2：教师模型训练（训练更大网络规模的强模型）
-使用独立的 `train_teacher.py` 脚本训练教师模型。您可以通过参数灵活调大网络（例如设置 20 层 ResBlock、256 特征通道），作为蒸馏源。
+使用主脚本 `train.py` 训练教师模型。您可以通过传入网络结构参数（例如 `--res_blocks 20 --hidden_channels 256`）灵活调大网络，并指定 `--checkpoint_prefix teacher_model`。
 ```bash
-python train_teacher.py --epochs 50 --batch_size 128 --res_blocks 20 --hidden_channels 256
+python train.py --checkpoint_prefix teacher_model --epochs 50 --batch_size 128 --res_blocks 20 --hidden_channels 256
 ```
 * **输出文件**：
   * **[teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/teacher_model.pt)**：最佳教师模型。
@@ -93,30 +99,26 @@ python train_teacher.py --epochs 50 --batch_size 128 --res_blocks 20 --hidden_ch
 使用主脚本 `train.py`，载入教师模型权重（可以是 GitHub 恢复出来的 `base_teacher_model.pt` 或新训练的大教师模型 `teacher_model.pt`），以 75/25 的混合比例蒸馏训练一个学生模型。
 * **使用从 GitHub 恢复的基础教师模型 `base_teacher_model.pt` 进行蒸馏**：
   ```bash
-  python train.py --teacher checkpoints/base_teacher_model.pt --epochs 50 --batch_size 128
+  python train.py --teacher checkpoints/base_teacher_model.pt --checkpoint_prefix student_model --epochs 50 --batch_size 128
   ```
 * **使用新训练的大教师模型 `teacher_model.pt` 进行蒸馏**（若教师模型网络维度被修改，则需传入相应的结构参数以正确载入教师）：
   ```bash
-  python train.py --teacher checkpoints/teacher_model.pt --epochs 50 --batch_size 128
-  ```
-* **自定义学生模型的输出名称**（通过 `--checkpoint_prefix` 规避覆盖）：
-  ```bash
-  python train.py --teacher checkpoints/base_teacher_model.pt --checkpoint_prefix student_model --epochs 50 --batch_size 128
+  python train.py --teacher checkpoints/teacher_model.pt --checkpoint_prefix student_model --epochs 50 --batch_size 128 --res_blocks 20 --hidden_channels 256
   ```
 
 #### 方案 4：分段/断点续训（增量累积与防中断恢复）
-如果您觉得一次性运行过长，可以使用 `--resume` 参数恢复。注意使用对应的脚本和对应的 latest 文件：
+如果您觉得一次性运行过长，可以使用 `--resume` 参数恢复。注意使用统一的脚本和对应的 latest 文件：
 * **恢复基础模型训练**：
   ```bash
-  python train_base.py --epochs 50 --batch_size 128 --resume checkpoints/latest_base_model.pt
+  python train.py --checkpoint_prefix base_model --epochs 50 --batch_size 128 --resume checkpoints/latest_base_model.pt
   ```
-* **恢复教师模型训练**：
+* **恢复教师模型训练**（如果修改了网络结构，需要带上结构参数）：
   ```bash
-  python train_teacher.py --epochs 50 --batch_size 128 --resume checkpoints/latest_teacher_model.pt
+  python train.py --checkpoint_prefix teacher_model --epochs 50 --batch_size 128 --res_blocks 20 --hidden_channels 256 --resume checkpoints/latest_teacher_model.pt
   ```
 * **恢复学生蒸馏训练**：
   ```bash
-  python train.py --epochs 50 --batch_size 128 --resume checkpoints/latest_model.pt
+  python train.py --teacher checkpoints/base_teacher_model.pt --checkpoint_prefix student_model --epochs 50 --batch_size 128 --resume checkpoints/latest_student_model.pt
   ```
 
 ---
@@ -137,10 +139,15 @@ python train_teacher.py --epochs 50 --batch_size 128 --res_blocks 20 --hidden_ch
 * 即使发生断电、系统崩溃或中断，您也能选择最近的 4 周期备份文件进行 `--resume` 恢复。
 
 ### 模型保存与权重输出映射
-根据运行脚本的不同，权重输出映射关系如下：
-1. **基础训练 (`train_base.py`)**：保存至 [base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/base_model.pt) 和 [latest_base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_base_model.pt)。
-2. **教师训练 (`train_teacher.py`)**：保存至 [teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/teacher_model.pt) 和 [latest_teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_teacher_model.pt)。
-3. **蒸馏训练 (`train.py`)**：默认保存至 [best_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/best_model.pt) 和 [latest_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_model.pt)（可通过 `--checkpoint_prefix` 调整）。
+所有的权重输出都保存在 `checkpoints/` 目录下：
+1. **基础训练** (`--checkpoint_prefix base_model`)：保存至 [base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/base_model.pt) 和 [latest_base_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_base_model.pt)。
+2. **教师训练** (`--checkpoint_prefix teacher_model`)：保存至 [teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/teacher_model.pt) 和 [latest_teacher_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_teacher_model.pt)。
+3. **蒸馏训练** (以 `--checkpoint_prefix student_model` 为例)：保存至 [best_student_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/best_student_model.pt) 和 [latest_student_model.pt](file:///C:/AAAAAAAAAAA_temp/desktop/Hephaestus_Repository/Colosseum/Gomoku_model/checkpoints/latest_student_model.pt)。
+
+### ❓ 常见报错与故障排除 (Troubleshooting)
+* **Windows 下 DataLoader 共享内存映射崩溃（错误码 1455）**：
+  * **现象**：报错 `RuntimeError: Couldn't open shared file mapping: ..., error code: <1455>`，这通常发生在 Windows 系统的虚拟内存（Paging File）不足，或 PyTorch 多线程 DataLoader 在进程间传递张量时发生共享内存冲突。
+  * **解决方法**：在训练启动命令中追加 `--num_workers 0` 参数（例如：`python train.py ... --num_workers 0`）。这会将数据加载回退到主线程中执行，从而绕过 Windows 的多进程共享内存限制，极大提升运行稳定性，且对训练速度影响甚微。
 
 ---
 

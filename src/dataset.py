@@ -178,13 +178,60 @@ class GomokuDataset(Dataset):
                     pickle.dump(psq_samples, f)
                 self.samples.extend(psq_samples)
 
+        # 3. Load edge tactical generated dataset (Stage 4)
+        tactical_file = os.path.join(config.BASE_DIR, "dataset", "edge_tactical.pkl")
+        if os.path.exists(tactical_file):
+            print(f"Loading edge tactical dataset from {tactical_file}...")
+            with open(tactical_file, "rb") as f:
+                tactical_samples = pickle.load(f)
+            
+            # Split: 80% train, 20% validation
+            random_state = np.random.RandomState(42)
+            indices = np.arange(len(tactical_samples))
+            random_state.shuffle(indices)
+            split_idx = int(len(indices) * 0.8)
+            
+            selected_indices = indices[:split_idx] if is_train else indices[split_idx:]
+            for idx in selected_indices:
+                self.samples.append(tactical_samples[idx])
+            print(f"Added {len(selected_indices)} edge tactical samples to {'train' if is_train else 'val'} dataset.")
+
+        # 4. Load self-play generated dataset (Stage 5)
+        self_play_dir = os.path.join(config.BASE_DIR, "dataset", "self_play_data")
+        if os.path.exists(self_play_dir):
+            self_play_files = glob.glob(os.path.join(self_play_dir, "*.pkl"))
+            if len(self_play_files) > 0:
+                print(f"Loading {len(self_play_files)} self-play game files...")
+                loaded_games = []
+                for filepath in self_play_files:
+                    with open(filepath, "rb") as f:
+                        game_samples = pickle.load(f)
+                    loaded_games.extend(game_samples)
+                
+                # Split: 80% train, 20% validation
+                random_state = np.random.RandomState(42)
+                indices = np.arange(len(loaded_games))
+                random_state.shuffle(indices)
+                split_idx = int(len(indices) * 0.8)
+                
+                selected_indices = indices[:split_idx] if is_train else indices[split_idx:]
+                for idx in selected_indices:
+                    self.samples.append(loaded_games[idx])
+                print(f"Added {len(selected_indices)} self-play samples to {'train' if is_train else 'val'} dataset.")
+
         # Categorize indices for edge/corner tactical resampling
         self.normal_indices = []
         self.edge_indices = []
         self.corner_indices = []
 
         for idx, sample in enumerate(self.samples):
-            r, c = sample["move"]
+            if sample.get("source") == "self_play":
+                policy = sample["policy"]
+                best_act = int(np.argmax(policy))
+                r = best_act // self.board_size
+                c = best_act % self.board_size
+            else:
+                r, c = sample["move"]
             min_dist = min(r, c, self.board_size - 1 - r, self.board_size - 1 - c)
             
             is_corner = (r <= 1 or r >= self.board_size - 2) and (c <= 1 or c >= self.board_size - 2)
@@ -216,8 +263,11 @@ class GomokuDataset(Dataset):
         threat_grid = sample["threat_grid"]
 
         # Create policy target (distribution map)
-        policy_target = np.zeros((self.board_size, self.board_size), dtype=np.float32)
-        policy_target[move[0], move[1]] = 1.0
+        if sample.get("source") == "self_play":
+            policy_target = sample["policy"].reshape(self.board_size, self.board_size).copy()
+        else:
+            policy_target = np.zeros((self.board_size, self.board_size), dtype=np.float32)
+            policy_target[move[0], move[1]] = 1.0
 
         # Apply D4 symmetry transformations during training (rotations + reflections)
         if self.is_train:
@@ -240,8 +290,10 @@ class GomokuDataset(Dataset):
         features = build_features(board, player, step, self.board_size)
         
         # Create value target (outcome relative to active player)
-        # If winner is same as player, value = +1.0. If winner is opponent, value = -1.0. Draw = 0.0
-        value_target = np.array([winner * player], dtype=np.float32)
+        if sample.get("source") == "self_play":
+            value_target = np.array([winner], dtype=np.float32)
+        else:
+            value_target = np.array([winner * player], dtype=np.float32)
 
         # Generate auxiliary targets
         # 1. Threat map (detect threats for current player on board before making the move)
