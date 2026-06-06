@@ -101,9 +101,7 @@ class GomokuTrainer:
                 # Forward pass
                 outputs = self.model(features)
                 
-                # Apply Temperature scaling to policy logits to control policy smoothing
-                if self.temperature != 1.0:
-                    outputs["policy_logits"] = outputs["policy_logits"] / self.temperature
+
 
                 loss_dict = self.criterion(outputs, targets)
                 loss = loss_dict["loss"]
@@ -175,9 +173,7 @@ class GomokuTrainer:
 
                 with torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16):
                     outputs = self.model(features)
-                    # Apply Temperature scaling to policy logits to control policy smoothing
-                    if self.temperature != 1.0:
-                        outputs["policy_logits"] = outputs["policy_logits"] / self.temperature
+
                     loss_dict = self.criterion(outputs, targets)
                 
                 batch_size = features.size(0)

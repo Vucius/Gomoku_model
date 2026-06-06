@@ -29,8 +29,8 @@ class TreeNode:
         for action, child in self.children.items():
             # PUCT formula
             u = c_puct * child.prior_prob * sqrt_sum_visits / (1 + child.visit_count)
-            # Q-value is relative to this node's player
-            puct_val = child.value + u
+            # Q-value is relative to this node's player (which is the opposite of the child's perspective)
+            puct_val = -child.value + u
             
             if puct_val > best_value:
                 best_value = puct_val
@@ -135,9 +135,10 @@ class MCTS:
             winner = check_five_in_a_row(scratch_board, board_size)
             
             if winner != 0:
-                # Value is +1.0 if the active player wins, -1.0 if they lose
-                # Since winner matches the player who just moved (which is -current_player)
-                value = 1.0 if winner == -current_player else -1.0
+                # Value is +1.0 if the active player wins, -1.0 if they lose.
+                # Since winner matches the player who just moved (-current_player),
+                # the active player at the leaf (current_player) has lost, so value is -1.0.
+                value = -1.0 if winner == -current_player else 1.0
             elif np.count_nonzero(scratch_board) == board_size * board_size:
                 # Draw
                 value = 0.0
